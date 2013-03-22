@@ -429,9 +429,18 @@ class PasswordManager(object):
 
     def list(self,searchFor=None):        
         search = False
+        searchAnd = False
         if searchFor and len(searchFor)>0:
             search = True
-                
+            searchFor = searchFor.split();
+            searchAnd = 'and' in searchFor
+            
+            while 'and' in searchFor:
+                searchFor.remove('and')
+        
+            while 'or' in searchFor:
+                searchFor.remove('or')
+
         filepath = self.getDBFilePath();
         
         #read master password info to get to password records
@@ -458,12 +467,23 @@ class PasswordManager(object):
                 # check if we will print this record
                 if search:
                     doPrint = False
-                    if username.lower().find(searchFor) >= 0 :
-                        doPrint = True
-                    elif ref.lower().find(searchFor) >= 0:
-                        doPrint = True
-                    elif notes.lower().find(searchFor) >= 0:
-                        doPrint = True
+                    searchCounter = 0
+                    while searchCounter < len(searchFor):
+                        doPrint = False
+                        s = searchFor[searchCounter]
+                        if username.lower().find(s) >= 0 :
+                            doPrint = True
+                        elif ref.lower().find(s) >= 0:
+                            doPrint = True
+                        elif notes.lower().find(s) >= 0:
+                            doPrint = True
+                        
+                        if searchAnd and not doPrint:
+                            searchCounter = len(searchFor)
+                        elif not searchAnd and doPrint:
+                            searchCounter = len(searchFor)
+                        searchCounter += 1
+                            
                 if doPrint:
                     #if printable add it to tuples
                     noMatches = False
@@ -483,6 +503,7 @@ class PasswordManager(object):
             self.prettyPrint(headers, dataRows)
             
 
+    
     def clip(self, masterPassword, clipId):
         filepath = self.getDBFilePath();
         file = open(filepath,'r')
@@ -680,6 +701,9 @@ class PasswordManager(object):
         print "list                  lists passwords' information"             
         print "search [SEARCH]       lists passwords' information where SEARCH matches: "
         print "                          usernames, notes and refs"
+        print "                          examples: search x "
+        print "                                    search x or y, search x y"
+        print "                                    search x and y"
         print ""
         print "update master         updates master password"
         print "help                  prints this menu"
