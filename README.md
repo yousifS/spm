@@ -42,40 +42,44 @@ Structure/Design
 - we could use md5 digest of the master password as the AES password instead of 5 and 6 above.
 - script checks the actual (unpadded full) master password before it runs.
 
+
 --------------
 DB FILE FORMAT 
 --------------
+1: version #
 
-1: last used password id, this is incremented on adding a new password
+2: show password timer
 
-2: master password digest
+3: last used password id, this is incremented on adding a new password
 
-3: salt used to get master password digest 
+4: master password digest
 
-4: number of iterations used to get password digest
+5: salt used to get master password digest 
 
-
-5: password record id 
-
-6: username 
-
-7: encrypted password (using master password)
-
-8: refence for the password
-
-9: notes for the password
+6: number of iterations used to get password digest
 
 
-10: password record id 
+7: password record id 
 
-11: username 
+8: username 
 
-12: encrypted password (using master password)
+9: encrypted password (using master password)
 
-13: refence for the password
+10: refence for the password
 
-14: notes for the password
+11: notes for the password
 
-.
+
+12: password record id 
+
+13: username 
+
+14: encrypted password (using master password)
+
+15: refence for the password
+
+16: notes for the password
+
+<repeat 5 line code block per password record>
 .
 .
