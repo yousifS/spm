@@ -7,9 +7,12 @@ import uuid
 from hashlib import sha256
 from itertools import islice, imap
 from time import sleep  
-import re
+import termios 
+import sys
+import readline
 
 class PasswordManager(object):
+    
     def run(self,argv):
         
         interactiveMode = True
@@ -28,7 +31,6 @@ class PasswordManager(object):
             self.printIntro()
             print ""
             return;
-        
                 
         masterPassword = None
         masterPasswordAttemptCount = 0
@@ -49,16 +51,16 @@ class PasswordManager(object):
                                 passwordDigest = sha256(salt+passwordDigest).hexdigest()
                                 i = i+1 
                             
-                            file=open(filepath,'w')
-                            file.write("0")
-                            file.write("\n")
-                            file.write(passwordDigest)
-                            file.write("\n")
-                            file.write(salt)
-                            file.write("\n")
-                            file.write(str(i))
-                            file.write("\n")
-                            file.close()
+                            meta = {}
+                            dbFile=open(filepath,'w')
+                            meta['version'] = self.getVersion();
+                            meta['showPasswordTimer'] = "5";
+                            meta['idCounter'] = "0";
+                            meta['masterDigest'] = passwordDigest;
+                            meta['masterSalt'] = salt;
+                            meta['masterIterationCount'] = str(i);
+                            self.writeDBMeta(meta,dbFile);
+                            dbFile.close()
                             print "[database created]"
 
                         else:
@@ -68,12 +70,11 @@ class PasswordManager(object):
                         self.error("invalid master password (%s/3)" % masterPasswordAttemptCount)
                         
                 else :
-                    file=open(filepath,'r')
-                    file.readline().strip()
-                    savedDigest = file.readline().strip()
+                    meta = self.readDBMeta()
+                    savedDigest = meta['masterDigest']
                     passwordDigest = masterPassword.strip()
-                    salt = file.readline().strip()
-                    iterations = int(file.readline().strip())
+                    salt = meta['masterSalt']
+                    iterations = int(meta['masterIterationCount'])
                     i = 0
                     while i< iterations :
                         passwordDigest = sha256(salt+passwordDigest).hexdigest()
@@ -82,19 +83,19 @@ class PasswordManager(object):
                     if passwordDigest != savedDigest:
                         self.error("invalid master password (%s/3)" % masterPasswordAttemptCount)
                         masterPassword = None
-            except:
-                print ""
-                    
+            except KeyboardInterrupt:
+                return
+            except EOFError:
+                return
         
         
         while command != "exit" and masterPassword:
             try:
                 if interactiveMode:
-                    command = raw_input("> ").strip()
+                    command = raw_input("spm> ").strip()
                     command = command.lower()
-                if command == 'update master':
-                    masterPassword = self.updateMaster(masterPassword)
-                elif command == 'add':
+               
+                if command == 'add':
                     self.addPassword(masterPassword)
                 elif command == 'list':
                     self.list()
@@ -108,6 +109,16 @@ class PasswordManager(object):
                     else:
                         searchFor = command[6:].strip()
                         self.list(searchFor)
+                elif command.startswith('set'):
+                    parsed = command.split()
+                    if len(parsed) >= 2 and parsed[0] == 'set' and parsed[1] == 'timer':
+                        if len(parsed) > 2:
+                            self.updateTimer(parsed[2])
+                        else:
+                            self.updateTimer()
+                    else:
+                        self.error("invalid command")
+               
                 elif command.startswith('update'):
                     updateId = None
                     updateField = None
@@ -116,6 +127,8 @@ class PasswordManager(object):
                     if parsed[0] != 'update':
                         self.error("invalid command") 
                         self.error("update requires a parameter")
+                    elif len(parsed) == 2 and parsed[1] == 'master':
+                        masterPassword = self.updateMaster(masterPassword)
                     elif len(parsed) == 2 :
                         updateId = parsed[1]
                         updateField = 'all'
@@ -129,9 +142,9 @@ class PasswordManager(object):
                             self.error("invalid command")
                     else:
                         self.error("invalid command")
-                        
-                        
+               
                 elif command.startswith('delete'):
+               
                     deleteId = None
                     parsed = command.split()
                     if parsed[0] != 'delete':
@@ -141,6 +154,7 @@ class PasswordManager(object):
                     else:
                         deleteId = parsed[1].strip()
                         self.delete(deleteId)
+               
                 elif command.startswith('show'):
                     showId = None
                     parsed = command.split()
@@ -169,9 +183,122 @@ class PasswordManager(object):
                     self.error("invalid command")
                 if not interactiveMode:
                     command = 'exit'
-            except: 
-                print ""
+            except KeyboardInterrupt:
+                return
+            except EOFError:
+                return
         
+    def readDBMeta(self, dbFile=None):
+        meta = {}
+        closeFile = False
+        if not dbFile:
+            filepath = self.getDBFilePath();
+            dbFile=open(filepath,'r')
+            closeFile = True
+            
+        meta['version'] = dbFile.readline().strip();
+        meta['showPasswordTimer'] = dbFile.readline().strip();
+        meta['idCounter'] = dbFile.readline().strip();
+        meta['masterDigest'] = dbFile.readline().strip();
+        meta['masterSalt'] = dbFile.readline().strip();
+        meta['masterIterationCount'] = dbFile.readline().strip();
+        
+        if closeFile:
+            dbFile.close()
+            
+        return meta
+    
+    def writeDBMeta(self, meta, dbFile):
+        dbFile.write(meta['version']);
+        dbFile.write('\n');
+        dbFile.write(meta['showPasswordTimer']);
+        dbFile.write('\n');
+        dbFile.write(meta['idCounter']);
+        dbFile.write('\n');
+        dbFile.write(meta['masterDigest']);
+        dbFile.write('\n');
+        dbFile.write(meta['masterSalt']);
+        dbFile.write('\n');
+        dbFile.write(meta['masterIterationCount']);
+        dbFile.write('\n');
+
+
+
+    def getRecord(self, searchId):
+        filepath = self.getDBFilePath();
+        dbFile = open(filepath,'r')
+        noMatches = True
+        
+        #read master password info to get to password records
+        self.readDBMeta(dbFile)
+        
+        record = self.readRecord(dbFile)
+        while record != None:
+            if record['id'] == searchId:
+                noMatches = False
+                break;
+            record = self.readRecord(dbFile)
+        
+        dbFile.close();
+        if noMatches: 
+            return None
+        else:
+            return record
+
+    def readRecord(self, dbFile):
+        record = {}
+        id = dbFile.readline()
+        if len(id) == 0:
+            return None
+        
+        record['id'] = id.strip();
+        record['username'] = dbFile.readline().strip();
+        record['password'] = dbFile.readline().strip();
+        record['ref'] = dbFile.readline().strip();
+        record['notes'] = dbFile.readline().strip();
+        return record
+    
+    def writeRecord(self, record, dbFile):
+        dbFile.write(record['id']);
+        dbFile.write('\n');
+        dbFile.write(record['username']);
+        dbFile.write('\n');
+        dbFile.write(record['password']);
+        dbFile.write('\n');
+        dbFile.write(record['ref']);
+        dbFile.write('\n');
+        dbFile.write(record['notes']);
+        dbFile.write('\n');
+        
+        
+    def updateTimer(self, newValue=None):
+        try:   
+            newValue = int (newValue)
+            if newValue <0 or newValue >99:
+                newValue = 5
+        except:
+            newValue = 5
+            
+            
+        filepath = self.getDBFilePath();
+        dbFile = open(filepath,'r')
+        
+        tmpFilepath = self.getDBFilePath(True);
+        tmpFile =  open(tmpFilepath, 'w');
+
+        meta = self.readDBMeta(dbFile)
+        meta['showPasswordTimer'] = str(newValue) 
+        self.writeDBMeta(meta, tmpFile)
+        
+        for line in dbFile:
+            tmpFile.write(line)
+        dbFile.close();
+        tmpFile.close();
+
+        os.remove(filepath)
+        os.rename(tmpFilepath, filepath)
+        print "[timer set]"
+
         
     def updateMaster(self, masterPassword):
         verifyOldPassword = getpass.getpass("old master password: ").strip()
@@ -185,13 +312,11 @@ class PasswordManager(object):
             #verify entered password against password in db
             oldPassword = verifyOldPassword
             filepath = self.getDBFilePath();
-            file=open(filepath,'r')
-            file.readline().strip()
-            savedDigest = file.readline().strip()
+            meta = self.readDBMeta()
+            savedDigest = meta['masterDigest']
             passwordDigest = oldPassword.strip()
-            salt = file.readline().strip()
-            iterations = int(file.readline().strip())
-            file.close()
+            salt = meta['masterSalt']
+            iterations = int(meta['masterIterationCount'])
             i = 0
             while i< iterations :
                 passwordDigest = sha256(salt+passwordDigest).hexdigest()
@@ -212,58 +337,34 @@ class PasswordManager(object):
         if doUpdate:
             
             filepath = self.getDBFilePath();
-            file = open(filepath,'r')
+            dbFile = open(filepath,'r')
+            
             tmpFilepath = self.getDBFilePath(True);
             tmpFile =  open(tmpFilepath, 'w');
-            # copy over next id line
-            tmpFile.write(file.readline())
             
-            #read old master password info to get to password records
-            file.readline();
-            file.readline();
-            file.readline();
-
+            #read old meta
+            meta = self.readDBMeta(dbFile)
+            
             passwordDigest = newPassword
             salt = str(uuid.uuid1())
             i = 0
-            while i<1000 :
+            while i< int(meta['masterIterationCount']) :
                 passwordDigest = sha256(salt+passwordDigest).hexdigest()
                 i = i+1 
             
             #write new master password info to the file
-            tmpFile.write(passwordDigest)
-            tmpFile.write("\n")
-            tmpFile.write(salt)
-            tmpFile.write("\n")
-            tmpFile.write(str(i))
-            tmpFile.write("\n")
+            meta['masterDigest'] = passwordDigest
+            meta['masterSalt'] = salt
+            self.writeDBMeta(meta, tmpFile)
             
-            for line in file:
-                id = line.strip()
-                if len(id) > 0 :
-                    #collect password record info
-                    username = file.next().strip()
-                    password = file.next().strip()
-                    ref = file.next().strip()
-                    notes = file.next().strip()
-                    
-                    #decrypt password with old master password, then encrypt with new master password
-                    password = decryptData(oldPassword, password)
-                    password = encryptData(newPassword, password)
-
-                    tmpFile.write(id)
-                    tmpFile.write("\n")
-                    tmpFile.write(username)
-                    tmpFile.write("\n")
-                    tmpFile.write(password)
-                    tmpFile.write("\n")
-                    tmpFile.write(ref)
-                    tmpFile.write("\n")
-                    tmpFile.write(notes)
-                    tmpFile.write("\n")
-
+            record = self.readRecord(dbFile)
+            while record != None:
+                record['password'] = decryptData(oldPassword, record['password'])
+                record['password'] = encryptData(newPassword, record['password'])
+                self.writeRecord(record,tmpFile)
+                record = self.readRecord(dbFile)
             
-            file.close();
+            dbFile.close();
             tmpFile.close()
             
             os.remove(filepath)
@@ -276,93 +377,53 @@ class PasswordManager(object):
 
     def update(self, masterPassword, updateId, field):
         filepath = self.getDBFilePath();
-        file = open(filepath,'r')
+        dbFile = open(filepath,'r')
         
         tmpFilepath = self.getDBFilePath(True);
         tmpFile =  open(tmpFilepath, 'w');
         
         
-        #copy next id
-        tmpFile.write(file.readline())
-        
-        #copy masterpassword info
-        tmpFile.write(file.readline())
-        tmpFile.write(file.readline())
-        tmpFile.write(file.readline())
+        meta = self.readDBMeta(dbFile)
+        self.writeDBMeta(meta,tmpFile)
         
         noMatches = True
         doUpdate = False
-        for line in file:
-            id = line.strip()
-            if len(id) > 0 :
-                
-                #collect old password info
-                username = file.next().strip()
-                password = file.next().strip()
-                ref = file.next().strip()
-                notes = file.next().strip()
-                
-                #if this is the record to update, verify and get new record info
-                if id == updateId:
-                    noMatches = False
-                    headers = ["id","username","ref","notes"]
-                    data = [id,username, ref,notes]
-                    self.prettyPrint(headers, [data])
-                    print ""
-                    
-                    confirmUdate = raw_input("update this record? [yes/no]: ").strip().lower()
-                    if confirmUdate.lower() == 'yes':
-                        doUpdate = True
-                    else :
-                        break
-                    
-
-                    if field == "all":
-                        username = raw_input("username: ").strip()
-                        password = getpass.getpass("password: ").strip()
-                        verifyPassword = getpass.getpass("verify password: ").strip()
         
-                        if verifyPassword != password:
-                            self.error("passwords do not match")
-                            doUpdate = False
-                            break;
-                        else :    
-                            password = encryptData(masterPassword, password)
-                            ref = raw_input("ref: ").strip()
-                            notes = raw_input("notes: ").strip()
-                    elif field == 'username':
-                        username = raw_input("username: ").strip()
-                    elif field == 'password':
-                        password = getpass.getpass("password: ").strip()
-                        verifyPassword = getpass.getpass("verify password: ").strip()
-                        if verifyPassword != password:
-                            self.error("passwords do not match")
-                            doUpdate = False
-                            break;
-                        else:
-                            password = encryptData(masterPassword, password)
-                        
-                    elif field == 'ref':
-                        ref = raw_input("ref: ").strip()
-                    elif field == 'notes':
-                        notes = raw_input("notes: ").strip()
-                    else :
+        record = self.readRecord(dbFile)
+        while record != None:
+            if record['id'] == updateId:
+                noMatches = False
+                self.prettyPrint([record])
+                print ""
+                confirmUdate = raw_input("update this record? [yes/no]: ").strip().lower()
+                if confirmUdate.lower() == 'yes':
+                    doUpdate = True
+                else :
+                    break
+                    
+                if field == 'all' or field == 'username':
+                    record['username'] = raw_input("username: ").strip()
+                
+                if field == 'all' or field == 'password':
+                    password = getpass.getpass("password: ").strip()
+                    verifyPassword = getpass.getpass("verify password: ").strip()
+                    if verifyPassword != password:
+                        self.error("passwords do not match")
                         doUpdate = False
+                        break;
+                    else:
+                        record['password'] = encryptData(masterPassword, password)
+                    
+                if field == 'all' or field == 'ref':
+                    record['ref'] = raw_input("ref: ").strip()
+                if field == 'all' or field == 'notes':
+                    record['notes'] = raw_input("notes: ").strip()
 
-                #add password record to tmp file (this could be updated info or old info)
-                tmpFile.write(id)
-                tmpFile.write("\n")
-                tmpFile.write(username)
-                tmpFile.write("\n")
-                tmpFile.write(password)
-                tmpFile.write("\n")
-                tmpFile.write(ref)
-                tmpFile.write("\n")
-                tmpFile.write(notes)
-                tmpFile.write("\n")
+            self.writeRecord(record,tmpFile)
+            record = self.readRecord(dbFile)
         
         tmpFile.close();
-        file.close();
+        dbFile.close();
 
         if noMatches:
             print "[no matches]"
@@ -374,52 +435,42 @@ class PasswordManager(object):
             print "[updated]"
         else :
             os.remove(tmpFilepath)
-
-                    
+         
 
     def addPassword(self, masterPassword):
         #get password record info
-        username = raw_input("username: ").strip()
+        record = {}
+        record['username'] = raw_input("username: ").strip()
         password = getpass.getpass("password: ").strip()
         verifyPassword = getpass.getpass("verify password: ").strip()
         
         if verifyPassword != password:
             self.error("passwords do not match")
             return
-        
-        ref = raw_input("ref: ").strip()
-        notes = raw_input("notes: ").strip()
+
+        record['password'] = encryptData(masterPassword, password)
+        record['ref'] = raw_input("ref: ").strip()
+        record['notes'] = raw_input("notes: ").strip()
 
         filepath = self.getDBFilePath();
+        dbFile = open(filepath,'r')
         
         tmpFilepath = self.getDBFilePath(True);
         tmpFile =  open(tmpFilepath, 'w');
 
-        file = open(filepath,'r')
-
-        #update next id for line
-        id = int(file.readline().strip())
-        id = id + 1
-        tmpFile.write(str(id))
-        tmpFile.write("\n")
-
+        meta = self.readDBMeta(dbFile)
+        meta['idCounter'] = str(int(meta['idCounter']) +1) 
+        record['id'] = meta['idCounter']
+         
+        self.writeDBMeta(meta, tmpFile)
+        
         #copy old passwords to new db file
-        for line in file:
+        for line in dbFile:
             tmpFile.write(line)
-        file.close();
+        dbFile.close();
         
         #add new password to new file
-        password = encryptData(masterPassword, password)
-        tmpFile.write(str(id))
-        tmpFile.write("\n")
-        tmpFile.write(username)
-        tmpFile.write("\n")
-        tmpFile.write(password)
-        tmpFile.write("\n")
-        tmpFile.write(ref)
-        tmpFile.write("\n")
-        tmpFile.write(notes)
-        tmpFile.write("\n")
+        self.writeRecord(record, tmpFile)
         tmpFile.close();
 
         os.remove(filepath)
@@ -442,57 +493,48 @@ class PasswordManager(object):
                 searchFor.remove('or')
 
         filepath = self.getDBFilePath();
+        dbFile = open(filepath,'r')
         
         #read master password info to get to password records
-        file = open(filepath,'r')
-        file.readline()
-        file.readline()
-        file.readline()
-        file.readline()
+        self.readDBMeta(dbFile)
         noMatches = True
         
         #stores data to list
-        dataRows = []
+        records = []
         
-        for line in file:
-            id = line.strip();
-            if len(id) > 0:
-                #read password record info
-                username = file.next().strip()
-                password = file.next().strip()
-                ref = file.next().strip()
-                notes = file.next().strip()
-                doPrint =  True
-                
-                # check if we will print this record
-                if search:
+        record = self.readRecord(dbFile)
+        while record != None:
+            #read password record info
+            doPrint =  True
+            
+            # check if we will print this record
+            if search:
+                doPrint = False
+                searchCounter = 0
+                while searchCounter < len(searchFor):
                     doPrint = False
-                    searchCounter = 0
-                    while searchCounter < len(searchFor):
-                        doPrint = False
-                        s = searchFor[searchCounter]
-                        if username.lower().find(s) >= 0 :
-                            doPrint = True
-                        elif ref.lower().find(s) >= 0:
-                            doPrint = True
-                        elif notes.lower().find(s) >= 0:
-                            doPrint = True
-                        
-                        if searchAnd and not doPrint:
-                            searchCounter = len(searchFor)
-                        elif not searchAnd and doPrint:
-                            searchCounter = len(searchFor)
-                        searchCounter += 1
-                            
-                if doPrint:
-                    #if printable add it to tuples
-                    noMatches = False
-                    dataRow= [id,username,ref,notes]
-                    dataRows.append(dataRow)
+                    s = searchFor[searchCounter]
+                    if record['username'].lower().find(s) >= 0 :
+                        doPrint = True
+                    elif record['ref'].lower().find(s) >= 0:
+                        doPrint = True
+                    elif record['notes'].lower().find(s) >= 0:
+                        doPrint = True
                     
-        file.close()
-
+                    if searchAnd and not doPrint:
+                        searchCounter = len(searchFor)
+                    elif not searchAnd and doPrint:
+                        searchCounter = len(searchFor)
+                    searchCounter += 1
+                        
+            if doPrint:
+                #if printable add it to tuples
+                noMatches = False
+                records.append(record)
+            
+            record = self.readRecord(dbFile)
         
+        dbFile.close()
         
         if search and noMatches :
             print "[no matches]"
@@ -500,126 +542,66 @@ class PasswordManager(object):
             print "[no passwords]"
         else:
             headers = ["id","username","ref","notes"]
-            self.prettyPrint(headers, dataRows)
+            self.prettyPrint(records)
             
 
     
     def clip(self, masterPassword, clipId):
-        filepath = self.getDBFilePath();
-        file = open(filepath,'r')
-        noMatches = True
-        
-        #read master password info to get to password records
-        file.readline()
-        file.readline()
-        file.readline()
-        file.readline()
-        
-        
-        for line in file:
-            id = line.strip()
-            if len(id) > 0 :
-                username = file.next().strip()
-                password = file.next().strip()
-                ref = file.next().strip()
-                notes = file.next().strip()
-                if id == clipId:
-                    noMatches = False
-                    password = decryptData(masterPassword, password)
-                    os.popen('xclip', 'wb').write(password)
-                    break;
-                    
-        
-        file.close();
-        if noMatches:
+        record = self.getRecord(clipId)
+        if record == None:
             print "[no matches]"
         else:
+            password = decryptData(masterPassword, record['password'])
+            os.popen('xclip', 'wb').write(password)
             print "[cliped]"
 
 
 
     def show(self,masterPassword, showId):        
-        filepath = self.getDBFilePath();
-        file = open(filepath,'r')
-        noMatches = True
-        
-        #read master password info to get to password records
-        file.readline()
-        file.readline()
-        file.readline()
-        file.readline()
-        
-        
-        for line in file:
-            id = line.strip()
-            if len(id) > 0 :
-                username = file.next().strip()
-                password = file.next().strip()
-                ref = file.next().strip()
-                notes = file.next().strip()
-                if id == showId:
-                    noMatches = False
-                    password = decryptData(masterPassword, password)
-                    headers = ["id","username","password","ref","notes"]
-                    data = [id,username,password, ref,notes]
-                    self.prettyPrint(headers, [data], 2)
-                    break;
-        
-        file.close()
-        
-        if noMatches:
+        record = self.getRecord(showId)
+        if record == None:
             print "[no matches]"
-           
+        else:
+            record['password'] = decryptData(masterPassword, record['password'])
+            self.prettyPrint([record],True)
+            
 
     def delete(self, deleteId):        
         filepath = self.getDBFilePath();
+        dbFile = open(filepath,'r')
+        
         tmpFilepath = self.getDBFilePath(True);
         tmpFile =  open(tmpFilepath, 'w');
         
         #copy over master password info
-        file = open(filepath,'r')
-        tmpFile.write(file.readline())
-        tmpFile.write(file.readline())
-        tmpFile.write(file.readline())
-        tmpFile.write(file.readline())
+        meta = self.readDBMeta(dbFile)
+        self.writeDBMeta(meta,tmpFile);
+        
         doDelete = False
         noMatches = True
+
+        record = self.readRecord(dbFile)
+        while record != None:
+            if record['id'] == deleteId:
+                noMatches = False
+                self.prettyPrint([record])
+                print ""
+                confirmDelete = raw_input("delete this record? [yes/no]: ").strip().lower()
+                if confirmDelete.lower() == 'yes':
+                    doDelete = True
+                else :
+                    break
+            else:
+                self.writeRecord(record, tmpFile)            
         
-        for line in file:
-            id = line.strip()
-            if len(id) > 0 :
-                username = file.next().strip()
-                password = file.next().strip()
-                ref = file.next().strip()
-                notes = file.next().strip()
-                if id == deleteId:
-                    noMatches = False
-                    headers = ["id","username","ref","notes"]
-                    data = [id,username, ref,notes]
-                    self.prettyPrint(headers, [data])
-                    print ""
-                    confirmDelete = raw_input("delete this record? [yes/no]: ").strip().lower()
-                    if confirmDelete.lower() == 'yes':
-                        doDelete = True
-                    else :
-                        break
-                else:
-                    #copy over undeleted passwords
-                    tmpFile.write(id)
-                    tmpFile.write("\n")
-                    tmpFile.write(username)
-                    tmpFile.write("\n")
-                    tmpFile.write(password)
-                    tmpFile.write("\n")
-                    tmpFile.write(ref)
-                    tmpFile.write("\n")
-                    tmpFile.write(notes)
-                    tmpFile.write("\n")
+            record = self.readRecord(dbFile)
         
         if noMatches:
             print "[no matches]"
+        
         tmpFile.close();
-        file.close();
+        dbFile.close();
+        
         if doDelete:
             #if a delete happened, replace db file
             os.remove(filepath)
@@ -629,17 +611,39 @@ class PasswordManager(object):
             os.remove(tmpFilepath)
 
 
-    def prettyPrint(self,headers, rows, clear=-1):
+    def prettyPrint(self,records, withPassword=False):
+        if len(records) == 0:
+            return;
+        
+        passwordIndex = 2
+        headers = []
+        headers.append('id')
+        headers.append('username')
+        if withPassword:
+            headers.append('password')
+        headers.append('ref')
+        headers.append('notes')
+        
         maxWidths = []
         for header in headers:
             maxWidths.append(len(header))
-            
-        for row in rows:
+        
+        rows = []    
+        for record in records:
+            row = []
+            row.append(record['id'])
+            row.append(record['username'])
+            if withPassword:
+                row.append(record['password'])
+            row.append(record['ref'])
+            row.append(record['notes'])
+            rows.append(row)
             idx = len(row);
             while idx > 0 :
                 idx -= 1
                 if maxWidths[idx] < len(row[idx]) :
                     maxWidths[idx] = len(row[idx])
+            
         
         formatString = ""
         seperatorFormatString = ""
@@ -659,6 +663,10 @@ class PasswordManager(object):
         print formatString % tuple(paddedHeaders)
         print seperatorFormatString % tuple(paddedSeperator)
 
+
+        meta = self.readDBMeta()
+        showPasswordTimer = int(meta['showPasswordTimer'])
+        
         for row in rows :
             paddedRow = []
             idx = 0
@@ -666,19 +674,32 @@ class PasswordManager(object):
                 paddedRow.append(dataPoint.ljust(maxWidths[idx]))
                 idx +=1
             printable =  formatString % tuple (paddedRow)
-            if clear >=0 and clear < len(paddedRow):
-                for counter in range(5):
+            if withPassword:
+
+                #disable input echoing (similar to getpass)
+                fd = sys.stdin.fileno()
+                old = termios.tcgetattr(fd)
+                new = termios.tcgetattr(fd)
+                new[3] = new[3] & ~termios.ECHO
+                termios.tcsetattr(fd, termios.TCSADRAIN, new)
+
+                for counter in range(showPasswordTimer):
                     sys.stdout.write('\r')
-                    sys.stdout.write(printable + ("  [clearing in %s]" % (5-counter)))
+                    sys.stdout.write(printable + ("  [clearing in %s]" % (showPasswordTimer-counter)))
                     sys.stdout.flush()
                     sleep(1)
+                    
                 sys.stdout.write('\r')
                 sys.stdout.flush()
-                paddedRow[clear] = " "*len(paddedRow[clear])
+                paddedRow[passwordIndex] = " "*len(paddedRow[passwordIndex])
                 printable =  formatString % tuple (paddedRow)   
-                printable += " "*18
+                printable += " "*19
+                
+                #turn echo back on
+                termios.tcsetattr(fd, termios.TCSADRAIN, old)
             print printable
-        
+            
+                    
     def getDBFilePath(self, forTmp=False):
         filePath = os.path.dirname(os.path.realpath(__file__))+"/spm.db"
         if(forTmp):
@@ -705,6 +726,8 @@ class PasswordManager(object):
         print "                                    search x or y, search x y"
         print "                                    search x and y"
         print ""
+        print "set timer [TIMER]     sets the shown password timer"
+        print "                          defaults to 5 secs, valid for 0 to 99 secs"
         print "update master         updates master password"
         print "help                  prints this menu"
         print "version               prints version information "
@@ -712,8 +735,11 @@ class PasswordManager(object):
         
 
     def printVersion(self):
-        print "version 0.02"    
-
+        print "version %s" % self.getVersion()    
+    
+    def getVersion(self):
+        return "0.3"
+        
     def printIntro(self):
         print "Simple Password Manager"
         print ""
@@ -1417,9 +1443,9 @@ def generateRandomKey(keysize):
 
 
 if __name__ == "__main__":
-    import sys
     passwordManager = PasswordManager();
     passwordManager.run(sys.argv[1:])
+    print ""
 
 ################# Comments #################
 """
